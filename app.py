@@ -845,34 +845,39 @@ def extract_campaign_offer(row):
             reasoning.append(f"Strong entertainment match: {explanation}")
             return 'Concerts/Tour', '; '.join(reasoning)
     
-    # 2. Special handling for cancer types
-    cancer_match = re.search(r'(?:metastatic\s+)?([a-zA-Z\s]+?)\s*cancer', text_lower)
-    if cancer_match and validate_condition(combined_text, "Cancer"):
-        cancer_type = cancer_match.group(1).strip()
-        if cancer_type:
-            specific_cancer = f"{cancer_type.title()} Cancer"
-            if specific_cancer in st.session_state.custom_categories['Medical Conditions']:
-                reasoning.append(f"Matched specific cancer type: {specific_cancer}")
-                return specific_cancer, '; '.join(reasoning)
-    
-    # 3. Check Medical Conditions with direct matches first
+    # 2. Check Medical Conditions with direct matches (including cancer types)
     for condition in st.session_state.custom_categories['Medical Conditions']:
         condition_lower = condition.lower()
-        # Only proceed with medical condition match if there's medical context
+        
+        # Only proceed if there's medical context
         if validate_condition(combined_text, condition):
+            # For direct matches (works for both cancer and non-cancer conditions)
             if condition_lower in text_lower:
                 reasoning.append(f"Direct match with medical condition: {condition}")
                 return condition, '; '.join(reasoning)
-            # Skip partial matches for cancer conditions to prevent incorrect matching
-            if "cancer" not in condition_lower:
-                if any(re.search(rf'\b{re.escape(word)}\b', text_lower) for word in condition_lower.split()):
-                    # Additional validation to prevent false positives
-                    if not any(re.search(pattern, text_lower) for pattern in category_indicators['Concerts/Tour']['medium_confidence']):
-                        matched_words = [word for word in condition_lower.split() if re.search(rf'\b{re.escape(word)}\b', text_lower)]
-                        reasoning.append(f"Partial match with medical condition {condition} through words: {', '.join(matched_words)}")
-                        return condition, '; '.join(reasoning)
+            
+            # For partial matches of non-cancer conditions
+            if 'cancer' not in condition_lower:
+                condition_words = condition_lower.split()
+                # Check if ALL words are present (not just any)
+                if all(re.search(rf'\b{re.escape(word)}\b', text_lower) for word in condition_words):
+                    # For multi-word conditions, ensure words appear close together
+                    if len(condition_words) > 1:
+                        # Check if words appear within 3 words of each other
+                        words_pattern = r'\b' + r'\W+(?:\w+\W+){0,3}?'.join(map(re.escape, condition_words)) + r'\b'
+                        if re.search(words_pattern, text_lower):
+                            # Also verify medical context
+                            medical_indicators = [
+                                'treatment', 'therapy', 'medication', 'symptoms', 'disease',
+                                'disorder', 'syndrome', 'diagnosed', 'managing', 'relief',
+                                'cure', 'remedy', 'pain', 'ache', 'discomfort', 'inflammation'
+                            ]
+                            if any(indicator in text_lower for indicator in medical_indicators):
+                                matched_words = condition_words
+                                reasoning.append(f"Partial match with medical condition {condition} through words: {', '.join(matched_words)}")
+                                return condition, '; '.join(reasoning)
     
-    # 4. Then check for specific health conditions using offer patterns
+    # 3. Then check for specific health conditions using offer patterns
     for condition, patterns in offer_patterns.items():
         if any(re.search(pattern, text_lower) for pattern in patterns):
             # Verify it's not a false positive due to entertainment content
@@ -881,7 +886,7 @@ def extract_campaign_offer(row):
                 reasoning.append(f"Matched health condition '{condition}' based on pattern(s): {', '.join(matched_patterns)}")
                 return condition, '; '.join(reasoning)
     
-    # 5. Then check Health Concerns
+    # 4. Then check Health Concerns
     for concern in st.session_state.custom_categories['Health Concerns']:
         concern_lower = concern.lower()
         if concern_lower in text_lower:
@@ -892,7 +897,7 @@ def extract_campaign_offer(row):
             reasoning.append(f"Partial match with health concern {concern} through words: {', '.join(matched_words)}")
             return concern, '; '.join(reasoning)
     
-    # 6. Finally check General Categories
+    # 5. Finally check General Categories
     best_category = None
     max_score = 0
     best_score_explanation = ""
@@ -960,95 +965,72 @@ def main():
     with st.sidebar:
         st.write("### How It Works")
         st.write("""
-        #### Step-by-Step Matching Process:
+        #### Text Processing & Matching:
         
-        1. **Entertainment Check (First Priority)**
-           - Prevents false medical matches in entertainment content
-           - Requires 4+ points from entertainment patterns
-           Examples:
-           - "Stubhub Concert Tickets" → "Concerts/Tour"
-           - "Live Music Festival 2024" → "Concerts/Tour"
+        1. **Preprocessing**
+           - Cleans text and decodes medical abbreviations
+           - Example: T1D → Type 1 Diabetes
         
-        2. **Cancer Type Detection**
-           - Special handling for specific cancer types
-           - Must match exactly with known cancer types
-           - Checks for medical context
-           Examples:
-           - "Metastatic Lung Cancer" → "Lung Cancer"
-           - "Stage 4 Breast Cancer" → "Breast Cancer"
-           - "Advanced NSCLC" → "Lung Cancer"
-           Note: Will not do partial matches on word "cancer" alone
+        2. **Entertainment Check**
+           - Prevents false medical matches
+           - Example: "Concert Tickets 2024" → "Concerts/Tour"
         
-        3. **Medical Condition Direct Matches**
-           - Requires medical context (treatment, symptoms, etc.)
-           - Must match condition name exactly
-           Examples:
-           - "Living with Polycythemia" → "Polycythemia"
-           - "Alzheimer's Disease Info" → "Alzheimer"
-           - "COPD Treatment Options" → "COPD"
+        3. **Medical Conditions**
+           - Requires medical context
+           - Direct matches for cancer types
+           - Example: "Metastatic Lung Cancer" → "Lung Cancer"
         
-        4. **Health Pattern Matching**
-           - Checks for specific health conditions
-           - Uses predefined patterns for each condition
-           Examples:
-           - "Blood Sugar Monitor" → "Blood Sugar"
-           - "Joint Pain Relief" → "Joint Pain"
-           - "T1D Management" → "Blood Sugar"
+        4. **Health Concerns**
+           - More flexible matching
+           - Example: "Weight Management" → "Weight Loss"
         
-        5. **Health Concerns Check**
-           - More general health topics
-           - Can match partially if context is clear
-           Examples:
-           - "Weight Management" → "Weight Loss"
-           - "Hearing Solutions" → "Hearing"
-        
-        6. **General Category Scoring**
-           Points system:
-           - High confidence matches: 3 points each
-           - Medium confidence matches: 2 points each
-           - Context words: 1 point each
-           - Minimum 4 points needed
+        5. **General Categories**
+           - Point-based scoring (min 4 points needed):
+             * High confidence = 3 points
+             * Medium confidence = 2 points
+             * Context words = 1 point
            
-           Examples:
-           - Finance category:
-             * "Credit Score + Banking" = 5 points
-             * "Investment Strategy" = 3 points
-           - Technology category:
-             * "Software Development + Digital" = 5 points
-           - Automobile category:
-             * "Car Dealer + Vehicle" = 5 points
+           Example scores:
+           * Finance: "Investment Strategy" = 3 points
+           * Tech: "Software Development" = 3 points
+        
+        #### Validation Rules:
+        
+        1. **Medical Conditions**
+           - Must have medical context
+           - Cancer types need exact matches
+           - Regular conditions allow partial matches
+        
+        2. **Health Concerns**
+           - Health-related context required
+           - Allows partial matching
+        
+        3. **General Categories**
+           - Minimum 4 points required
+           - No medical terms needed
+           - Category-specific keywords
         """)
         
         st.write("### Category Types")
         st.write("""
         1. **Medical Conditions**
-           - Specific diseases and conditions
-           - Highest matching priority
+           - Highest priority
+           - Examples: Cancer types, COPD, Alzheimer
            - Requires medical context
-           - Examples:
-             * Cancer types (Lung, Breast, Blood)
-             * Chronic conditions (COPD, Alzheimer)
-             * Specific diagnoses (Polycythemia, Myeloma)
         
         2. **Health Concerns**
-           - General health and wellness topics
-           - Medium matching priority
-           - More flexible matching
-           - Examples:
-             * Weight Loss
-             * Blood Sugar
-             * Joint Pain
-             * Blood Pressure
+           - Medium priority
+           - Examples: Weight Loss, Blood Sugar
+           - Health-related context needed
         
         3. **General Categories**
-           - Non-medical topics
-           - Uses point-based scoring
-           - Categories:
+           - Point-based matching
+           - Types:
              * Education (courses, degrees)
-             * Finance (credit, investments)
+             * Finance (investments, banking)
              * Technology (software, digital)
-             * Automobile (cars, vehicles)
-             * Concerts/Tour (music, events)
+             * Automobile (cars, services)
+             * Concerts/Tour (events, tickets)
         """)
     
     # Main content
@@ -1108,57 +1090,51 @@ def main():
     with tab2:
         st.write("### Manage Categories")
         st.write("""
-        Below are all the current categories used for matching. You can add new categories or remove existing ones.
-        Each category has specific matching rules as described in the left sidebar.
+        Add or remove categories used for matching. Each category follows specific matching rules:
+        
+        1. **Medical Conditions**
+           - Requires medical context words
+           - Cancer types need exact matches
+           - Other conditions allow partial matches
+        
+        2. **Health Concerns**
+           - More flexible matching rules
+           - Health-related context needed
+           - Allows partial word matches
+        
+        3. **General Categories**
+           - Uses point-based scoring
+           - Needs minimum 4 points to match
+           - Category-specific keywords
         """)
         
         # Display current categories
         st.write("#### Current Categories")
         
-        st.write("**Medical Conditions** (Highest Priority, Requires Medical Context):")
-        medical_conditions = ", ".join(sorted([
-            "Alzheimer", "Asthma", "Back Pain", "Blood Cancer", "Breast Cancer", 
-            "COPD", "Dementia", "EDS", "Eczema", "Hypersomnia", "IH Diagnosis", 
-            "Joint Pain", "Kidney Disease", "Lung Cancer", "Lupus", "Myelofibrosis", 
-            "Myeloma", "Polycythemia", "Prostate", "Schizophrenia", "Sclerosis"
-        ]))
+        st.write("**Medical Conditions:**")
+        medical_conditions = ", ".join(sorted(st.session_state.custom_categories['Medical Conditions']))
         st.write(medical_conditions)
         
-        st.write("\n**Health Concerns** (Medium Priority, More Flexible Matching):")
-        health_concerns = ", ".join(sorted([
-            "Aligner", "Blood Pressure", "Blood Sugar", "Hearing", 
-            "Joint Pain", "Memory", "Prostate", "Weight Loss"
-        ]))
+        st.write("\n**Health Concerns:**")
+        health_concerns = ", ".join(sorted(st.session_state.custom_categories['Health Concerns']))
         st.write(health_concerns)
         
-        st.write("\n**General Categories** (Point-Based Scoring Required):")
-        general_categories = ", ".join(sorted([
-            "Automobile", "Concerts/Tour", "Education", "Finance", "Technology"
-        ]))
+        st.write("\n**General Categories:**")
+        general_categories = ", ".join(sorted(st.session_state.custom_categories['General Categories']))
         st.write(general_categories)
         
         st.write("\n---")
         
         # Add new category
         st.write("#### Add New Category")
-        st.write("""
-        Add a new category to one of the three category types. Make sure the category follows these guidelines:
-        - Medical Conditions: Specific diseases or medical conditions
-        - Health Concerns: General health and wellness topics
-        - General Categories: Non-medical topics that use point-based scoring
-        """)
+        st.write("Select category type and enter the new category name:")
         add_custom_category()
         
         st.write("---")
         
         # Remove category
         st.write("#### Remove Category")
-        st.write("""
-        Remove an existing category. Please note:
-        - Removing a category will affect future matches
-        - The change takes effect immediately
-        - You can always add the category back if needed
-        """)
+        st.write("Select the category type and choose the category to remove:")
         remove_custom_category()
 
 if __name__ == "__main__":
